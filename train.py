@@ -3,7 +3,7 @@ from stable_baselines3 import SAC
 from stable_baselines3.common.env_checker import check_env
 
 '''
-TEst teste3
+TEst teste4
 IDEA FROM AI
 
 The U-Trap Paradox (Zero Memory)
