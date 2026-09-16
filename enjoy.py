@@ -1,69 +1,77 @@
-import pygame
-import sys
+import cv2
 import numpy as np
 from stable_baselines3 import SAC
-from rl_training import OmniDroneEnv
+from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
+from uav_env import Drone3DEnv
+import pybullet as p
 
-# load env
-env = OmniDroneEnv()
-model = SAC.load("sac_drone_v7") #load model
+CTRL_FREQ  = 42
+N_EPISODES = 5
+CAM_W, CAM_H = 640, 480
+OUT_FILE   = "flights.mp4"
 
-# Frontend init
-pygame.init()
-width, height = 800, 800
-scale = 60
-screen = pygame.display.set_mode((width, height))
-pygame.display.set_caption("SAC Agent Inference")
-clock = pygame.time.Clock()
+raw_env = Drone3DEnv(gui=False, record=False)
+vec_env = DummyVecEnv([lambda: raw_env])
+env = VecNormalize.load("vecnormalize_stats.pkl", vec_env)
+env.training    = False
+env.norm_reward = False
 
-def to_screen(x, y):
-    """Utilitário para converter coordenadas"""
-    return int(width / 2 + x * scale), int(height / 2 - y * scale)
+model = SAC.load("navDrone_v1_plus", env=env)
 
-obs, info = env.reset()
+real_env = env.unwrapped.envs[0]
+CLIENT   = real_env.CLIENT
 
-running = True
-while running:
+proj_matrix = p.computeProjectionMatrixFOV(
+    fov=60, aspect=CAM_W / CAM_H, nearVal=0.1, farVal=100.0
+)
 
-    for event in pygame.event.get():
-        if event.type == pygame.QUIT:
-            running = False
+fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+writer = cv2.VideoWriter(OUT_FILE, fourcc, CTRL_FREQ, (CAM_W, CAM_H))
 
-    # neural network actions
-    action, _states = model.predict(obs, deterministic=True)
+print(f"Recording {N_EPISODES} episodes → {OUT_FILE}")
+for ep in range(1, N_EPISODES + 1):
+    obs     = env.reset()
+    cam_yaw = 45.0
+    print(f"  Episode {ep}/{N_EPISODES}")
 
-    # aplies vx, vy and omega and gets new state
-    obs, reward, terminated, truncated, info = env.step(action)
+    for step in range(500):
+        action, _ = model.predict(obs, deterministic=True)
+        obs, reward, done, info = env.step(action)
 
-    # if scenario terminated
-    if terminated or truncated:
-        obs, info = env.reset()
+        state     = real_env._getDroneStateVector(0)
+        drone_pos = state[0:3]
 
-    # render
-    screen.fill((20, 20, 20))
-    
-    # draw walls
-    for wall in env.sim.walls:
-        pygame.draw.line(screen, (200, 200, 200), to_screen(wall[0], wall[1]), to_screen(wall[2], wall[3]), 3)
+        view_matrix = p.computeViewMatrixFromYawPitchRoll(
+            cameraTargetPosition=drone_pos,
+            distance=2.5,
+            yaw=cam_yaw,
+            pitch=-25,
+            roll=0,
+            upAxisIndex=2
+        )
 
-    # LiDAR
-    rx, ry, _ = env.sim.pose
-    start_ray = to_screen(rx, ry)
-    distances, angles = env.sim.read_sensors()
-    for dist, angle in zip(distances, angles):
-        end_x = rx + dist * np.cos(angle)
-        end_y = ry + dist * np.sin(angle)
-        pygame.draw.line(screen, (255, 50, 50), start_ray, to_screen(end_x, end_y), 1)
+        _, _, rgb_pixels, _, _ = p.getCameraImage(
+            width=CAM_W, height=CAM_H,
+            viewMatrix=view_matrix,
+            projectionMatrix=proj_matrix,
+            renderer=p.ER_TINY_RENDERER,
+            physicsClientId=CLIENT
+        )
 
-    # UAV
-    pygame.draw.circle(screen, (0, 255, 0), start_ray, int(0.2 * scale))
-    pygame.draw.circle(screen, (255, 0, 0), to_screen(env.sim.obj_x, env.sim.obj_y), int(0.15 * scale))
+        # cv2 expects BGR — PyBullet gives RGBA
+        frame_rgb = np.array(rgb_pixels, dtype=np.uint8).reshape(CAM_H, CAM_W, 4)[:, :, :3]
+        frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
+        writer.write(frame_bgr)
 
-    # updates screen
-    pygame.display.flip()
-    
-    # tries to set fps to 60
-    clock.tick(60)
+        cam_yaw += 0.3
 
-pygame.quit()
-sys.exit()
+        if done[0]:
+            print(f"    Ended at step {step}, reward {reward[0]:.1f}")
+            # Freeze last frame for 0.5s
+            for _ in range(CTRL_FREQ // 2):
+                writer.write(frame_bgr)
+            break
+
+writer.release()
+env.close()
+print(f"Done → {OUT_FILE}")
