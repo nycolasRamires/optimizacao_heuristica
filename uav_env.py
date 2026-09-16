@@ -96,9 +96,6 @@ class Drone3DEnv(BaseRLAviary):
         velocity_penalty = np.linalg.norm(vel) * 0.5 
         drift_penalty = np.linalg.norm(pos[0:2]) * 0.2
         
-        # O antídoto para o suicídio acrobático. 
-        # Pune agressivamente a rede se ela tentar inclinar o drone,
-        # forçando-a a aprender que a posição mais lucrativa é 100% nivelada.
         acrobatics_penalty = (abs(rpy[0]) + abs(rpy[1])) * 2.0
         
         return float(survival_bonus + altitude_reward - velocity_penalty - drift_penalty - acrobatics_penalty)
