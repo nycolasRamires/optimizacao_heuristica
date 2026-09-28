@@ -1,0 +1,102 @@
+# Project Goals & Progress (`ai/goals.md`)
+
+- [x] **Phase 1: 2D Simulation Core & Baselines**
+  - [x] 2D kinematic engine with translation ($v_x, v_y$) and rotation ($\omega$) ([`simple_sim.py`](file:///home/nycolas/m/simple_sim.py))
+  - [x] Compact 10m x 10m arena with 3 asymmetric pillars (2.2m x 2.2m, 1.5m x 1.5m, 1.2m x 1.2m)
+  - [x] Tight obstacle corridors (1.8m to 3.1m width) forcing obstacle avoidance
+  - [x] Analytical 15-ray LiDAR raycaster ($100^\circ$ FOV, 10m range) across 16 walls
+  - [x] Continuous wall collision detection and sliding response
+  - [x] Fully randomized drone spawn & target generator with interior pillar rejection
+  - [x] Guaranteed topological accessibility across all 3-pillar corridors
+  - [x] Gymnasium environment wrapper ([`OmniDroneEnv`](file:///home/nycolas/m/rl_training.py#L18-L161) in [`rl_training.py`](file:///home/nycolas/m/rl_training.py))
+  - [x] 17D observation space (15 LiDAR + normalized goal distance + local goal angle)
+  - [x] 3D action space ($v_x, v_y, \omega$)
+  - [x] Dense reward shaping (progress, heading alignment, collision/living penalties)
+  - [x] Stable-Baselines3 SAC baseline training pipeline ([`train.py`](file:///home/nycolas/m/train.py))
+  - [x] Manual keyboard testing interface with shaded pillars ([`Render.py`](file:///home/nycolas/m/Render.py))
+  - [x] Real-time policy visualizer with HUD ([`enjoy.py`](file:///home/nycolas/m/enjoy.py))
+
+- [x] **Phase 2: Simulation & Training High-Throughput Optimization**
+  - [x] Performance bottleneck assessment (Baseline: 166.9 steps/s, ~99.9 min / 1M steps)
+  - [x] Vectorize 15-ray LiDAR raycaster across all wall segments (5x speedup in `read_sensors`)
+  - [x] Precompute static wall projection matrices and cache minimum wall distances
+  - [x] Analytical FOV check without LAPACK solvers (7x speedup in `is_wp_in_fov`)
+  - [x] Eliminate redundant collision queries and observation trigonometry in `OmniDroneEnv` (4.7x env speedup to 40,750 FPS)
+  - [x] Multi-environment training vectorization with `DummyVecEnv` (16 envs: 2,585 steps/s, ~6.45 min / 1M steps)
+  - [x] Implement Numba `@njit(fastmath=True)` acceleration on LiDAR raycaster & wall distance calculations (Optimization 4: 30.8x faster raycaster, 30.5x faster wall distance)
+  - [x] Implement SAC `train_freq=(4, 'step')` and `gradient_steps=4` batch pipelining (Optimization 1: maintains UTD=1, eliminates per-step PyTorch CUDA kernel launch overhead)
+  - [x] Implement `torch.compile` policy actor acceleration with safe checkpoint unwrapping before serialization (Optimization 3)
+  - [x] Complete comparative throughput benchmark:
+    - Baseline (pre-opt): 2,450.2 steps/s
+    - Post-opt (16 envs): 3,025.6 steps/s (+23.5% speedup)
+    - Post-opt (20 envs): 3,801.5 steps/s (+55.1% speedup)
+  - [ ] Future Enhancement (Item 2): Evaluate & implement `SubprocVecEnv` or Shared-Memory C/Cython Multi-Process Vectorization across physical CPU cores to scale past 20 envs/worker
+
+- [ ] **Phase 3: Genetic Algorithm for Reward Optimization**
+  - [x] Implement parameterizable reward interface in `OmniDroneEnv` ([`DEFAULT_REWARD_PARAMS`](file:///home/nycolas/m/rl_training.py#L5-L16))
+  - [x] Add warm-start checkpoint loader and optimizer learning rate override in [`train.py`](file:///home/nycolas/m/train.py)
+  - [x] Train 300k-step baseline checkpoint (`base.zip`) in compact 10x10 3-pillar arena (64% success, 29% collision, 7% timeout)
+  - [x] Implement retreat penalty policy relative to recent steps with tolerance
+  - [x] Implement timestep-based early arrival goal bonus preserving fixed goal reward
+  - [x] Implement 2nd-order acceleration/deceleration dynamics and physical max velocity clamping ($v_{\max} = 2.0\text{m/s}$)
+  - [x] Expand observation space to 19D (including normalized local velocities $v_x, v_y$)
+  - [x] Implement 4 speed policies (high speed reward, speed-dependent crash penalty with threshold boost, fixed-threshold overspeed penalty, constant cruise velocity reward)
+  - [x] Retrain baseline checkpoint (`base.zip`) with acceleration action space and 19D observations (39% success, 25% collision, 36% timeout, 0.91 m/s avg speed)
+  - [x] Design GA genome (weights for 17 active reward/penalty terms; retreat_tolerance and retreat_window_steps fixed)
+  - [x] Build fitness evaluation function (average timesteps to goal over 100 tries, viability threshold SR $\ge 50\%$)
+  - [x] Implement GA evolutionary engine in [`evolution.py`](file:///home/nycolas/m/evolution.py) with 2-worker concurrency, 20 individuals/gen, and checkpoint caching
+  - [x] Implement multi-group evolutionary reproduction cycle:
+    - [x] Group 2 ($n_{\text{best}} = 4$): Top 4 surviving elites pass directly (unmutated clones)
+    - [x] Group 3 ($C(4,2) = 6$): Half of the 12 offspring from all-pairs elite recombination (mutated, 3-gene blend)
+    - [x] Group 4 ($n_{\text{left}}$): Rank-proportional selection without replacement $(n_{\text{survivors}} - rank + 1)$ (unmutated)
+    - [x] Group 1 ($n_{\text{dead}}$): Random survivor pair recombination replacing dead individuals (mutated, 3-gene blend)
+    - [x] 3-gene blend crossover and 10% bounded Gaussian mutation operators
+    - [x] Edge-case survivor prioritization and random re-seeding fallbacks
+  - [x] Implement post-evolution analysis, 4-panel graph plotting, and head-to-head baseline tournament suite ([`evaluate_ga.py`](file:///home/nycolas/m/evaluate_ga.py))
+  - [x] Implement specialized evolutionary visual analytics & standalone HTML dashboard ([`plot_evolution.py`](file:///home/nycolas/m/plot_evolution.py)):
+    - [x] Plot 1A: Full dynamically-scaled population matrix (e.g. N=25+), direct parent connections (solid for clones, dashed for recombinations), and in-symbol ⚡ mutation badges
+    - [x] Plot 1B: Standalone population composition & threshold mortality stacked bar chart
+    - [x] Plot 1C: Standalone population fitness dispersion boxplot
+    - [x] Plot 2: Best individual performance metrics across generations (with 55% viability reference)
+    - [x] Plot 3: Population mean metrics, standard deviation envelopes, and elite advantage margins
+    - [x] Plot 4: High-resolution (300 DPI) 17-gene allele drift and convergence grid with drift rankings and summary card
+    - [x] Standalone portable HTML dashboard (`evolution_dashboard.html`) with embedded Base64 plots and one-click PNG downloads
+  - [x] Algorithmic improvements & parameter solidifications:
+    - [x] Increase viability threshold from 0.50 to 0.55 (55% success rate)
+    - [x] Upgrade Group 4 survivor selection from rank selection to Tournament Selection ($k=3$)
+    - [x] Replace unbounded Gaussian mutation with bounded $\pm 50\%$ relative shift ($v \pm 0.5|v|$)
+    - [x] Implement dual champion reporting (Best of Final Generation + All-Time Champion)
+    - [x] Implement two-generation delta progression summary ($\Delta\text{Steps}$, $\Delta\text{SR}$, $\Delta\text{Coll}$)
+  - [x] Complete 5-generation pilot run (20 individuals/gen, 300k steps/ind, champion reached 131.0 steps, 66% SR)
+  - [x] Execute extended evolutionary search run with upgraded parameters (30 generations, 25 individuals/gen, 300k steps/ind; all-time champion Gen 09 Ind 12 reaching 128.7 steps, 66% SR)
+  - [x] Implement Hierarchical Individual Mutation (individual gate ramping 0.10 -> 0.20, with 50% 1-gene / 50% 2-genes selection)
+  - [x] Implement Dynamic Mutation Band Schedule (+/-100% -> +/-25% linear decay)
+  - [x] Implement Dynamic Viability Threshold Schedule (50% -> 65% linear ramp, with dead replacement via survivor recombination)
+  - [x] Implement Penalized Effective Timesteps Fitness (collisions and timeouts penalized as 500 max_steps)
+  - [x] Expand GENE_BOUNDS search space across shaping and penalty terms to heighten genetic diversity and prevent boundary saturation
+  - [x] Implement dual visual legend in Plot 4 (top global banner legend + side-by-side graphical legend in Panel 18)
+  - [x] Implement Vectorized 1,000-Episode Policy Evaluation (~14s per individual, reducing SEM measurement error to ±1.9 steps)
+  - [x] Implement Exact Clone Checkpoint Inheritance (skips retraining for unmutated single-parent clones, eliminating Plot 1A elite rank jitter)
+  - [x] Execute 30-generation evolutionary search run v2 (`ga_results_v2`, 400k timesteps, 25 ind/gen; all-time champion Gen 23 Ind 13 reaching 97.0% SR, 2.0% Coll, 168.4 steps, 1.98 m/s)
+  - [x] Resolve `resource_tracker` 60 leaked semaphore warning (switched to `torch.multiprocessing`, `file_system` sharing strategy, and explicit CUDA IPC cleanup)
+  - [x] Resolve 19/25 frozen clone bug: converted Group 4 to Tournament Recombination with individual mutation; strictly restricted retraining skips to top elites (Group 2)
+  - [x] Execute 30-generation evolutionary search run v3 (`ga_results_f3`, 450k timesteps, 25 ind/gen, 4 elites)
+  - [x] Enforce strict tier separation in reproduction: Group 4 & Group 1 tournament/replacement strictly Non-Elite × Non-Elite (preventing elite dilution)
+  - [x] Overhaul evolutionary visual analytics in [`plot_evolution.py`](file:///home/nycolas/m/plot_evolution.py): dynamic viability threshold schedule, uncluttered node markers without 750-text collisions, and milestone-only annotations
+  - [x] Codify 2D lessons and 3D transition blueprints in [`.agents/skills/drone-evolution-3d/SKILL.md`](file:///home/nycolas/m/.agents/skills/drone-evolution-3d/SKILL.md) and [`GEMINI.md`](file:///home/nycolas/m/GEMINI.md)
+
+- [ ] **Phase 4: 3D Quadrotor Physics & Control Transition**
+  - [ ] Implement 6-DOF rigid-body dynamics with Newton-Euler equations and quaternion attitude
+  - [ ] Implement cascaded attitude control interface ($[T_{\text{norm}}, \phi_{\text{cmd}}, \theta_{\text{cmd}}, \dot{\psi}_{\text{cmd}}]$)
+  - [ ] Vectorize 3D spherical LiDAR raycasting across 3D cylindrical and planar obstacles
+  - [ ] Design 3D observation space ($[x, y, z]_{\text{local}}, \mathbf{v}_B, \mathbf{q}, \boldsymbol{\omega}_B, \text{3D LiDAR}$)
+  - [ ] Migrate multi-tier GA evolutionary search to 3D navigation and altitude regulation
+  - [ ] Implement Frame Stacking (last 4 frames of LiDAR & velocity)
+  - [ ] Implement Recurrent Policy (RecurrentPPO with LSTM via `sb3-contrib`)
+  - [ ] Implement Hybrid Navigation (A* global path planner + SAC local obstacle avoidance)
+  - [ ] Benchmark memory-based vs. hybrid approaches on concave obstacle maps
+
+- [ ] **Phase 5: Environment Polish & Benchmarking**
+  - [ ] Add Gaussian noise and sensor dropout to LiDAR rays for policy robustness
+  - [ ] Add dynamic maze/obstacle configuration generator
+  - [ ] Automated 100-seed quantitative evaluation suite

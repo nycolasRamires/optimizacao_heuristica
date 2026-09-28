@@ -1,5 +1,58 @@
 import numpy as np
 
+try:
+    from numba import njit
+    NUMBA_AVAILABLE = True
+except ImportError:
+    NUMBA_AVAILABLE = False
+
+@njit(fastmath=True)
+def _numba_min_dist_to_walls(x, y, wall_A, wall_vec, wall_dot):
+    num_walls = len(wall_A)
+    min_dist_sq = 1e12
+    for w in range(num_walls):
+        AP_x = x - wall_A[w, 0]
+        AP_y = y - wall_A[w, 1]
+        dot_AP_AB = AP_x * wall_vec[w, 0] + AP_y * wall_vec[w, 1]
+        t = dot_AP_AB / wall_dot[w]
+        if t < 0.0:
+            t = 0.0
+        elif t > 1.0:
+            t = 1.0
+        closest_x = wall_A[w, 0] + t * wall_vec[w, 0]
+        closest_y = wall_A[w, 1] + t * wall_vec[w, 1]
+        dx = x - closest_x
+        dy = y - closest_y
+        dist_sq = dx * dx + dy * dy
+        if dist_sq < min_dist_sq:
+            min_dist_sq = dist_sq
+    return np.sqrt(min_dist_sq)
+
+@njit(fastmath=True)
+def _numba_read_sensors(pose_x, pose_y, pose_theta, ray_offsets, wall_A, wall_vec, max_range):
+    num_rays = len(ray_offsets)
+    num_walls = len(wall_A)
+    distances = np.empty(num_rays, dtype=np.float64)
+    
+    for r in range(num_rays):
+        angle = pose_theta + ray_offsets[r]
+        ray_dir_x = np.cos(angle)
+        ray_dir_y = np.sin(angle)
+        min_t = max_range
+        
+        for w in range(num_walls):
+            det = ray_dir_x * wall_vec[w, 1] - ray_dir_y * wall_vec[w, 0]
+            if abs(det) > 1e-6:
+                diff_x = wall_A[w, 0] - pose_x
+                diff_y = wall_A[w, 1] - pose_y
+                t = (diff_x * wall_vec[w, 1] - diff_y * wall_vec[w, 0]) / det
+                u = (diff_x * ray_dir_y - diff_y * ray_dir_x) / det
+                if t > 0.0 and 0.0 <= u <= 1.0:
+                    if t < min_t:
+                        min_t = t
+        distances[r] = min_t
+    return distances
+
 class MazeSimulation:
     def __init__(self, dt=0.05, arena_size=10.0):
         self.dt = dt
@@ -199,7 +252,9 @@ class MazeSimulation:
         return bool(abs(angle_to_goal) <= self.half_fov)
 
     def _get_min_dist_to_walls(self, x, y):
-        """Fast vectorized point-to-segment distance to all walls."""
+        """Fast vectorized point-to-segment distance to all walls (Numba accelerated)."""
+        if NUMBA_AVAILABLE:
+            return float(_numba_min_dist_to_walls(x, y, self.wall_A, self.wall_vec, self.wall_dot))
         AP_x = x - self.wall_A[:, 0]
         AP_y = y - self.wall_A[:, 1]
         dot_AP_AB = AP_x * self.wall_vec[:, 0] + AP_y * self.wall_vec[:, 1]
@@ -211,7 +266,15 @@ class MazeSimulation:
         return float(np.sqrt(np.min(dx * dx + dy * dy)))
 
     def read_sensors(self):
-        """Vectorized LiDAR raycaster calculating all 15 rays against 16 walls simultaneously."""
+        """Vectorized LiDAR raycaster calculating all 15 rays against 16 walls (Numba accelerated)."""
+        if NUMBA_AVAILABLE:
+            angles = self.pose[2] + self.ray_offsets
+            distances = _numba_read_sensors(
+                self.pose[0], self.pose[1], self.pose[2],
+                self.ray_offsets, self.wall_A, self.wall_vec, self.max_range
+            )
+            return distances, angles
+
         pose_x, pose_y, pose_theta = self.pose
         angles = pose_theta + self.ray_offsets
         ray_dirs_x = np.cos(angles)

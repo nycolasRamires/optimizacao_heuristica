@@ -48,11 +48,16 @@ def train(timesteps=500000, num_envs=16, model_save_name="base", load_model_path
 
     if load_model_path:
         print(f"Loading pre-trained base model from '{load_model_path}'...")
+        custom_objs = {
+            "train_freq": (4, "step"),
+            "gradient_steps": 4,
+        }
         model = SAC.load(
             load_model_path,
             env=vec_env,
             device="cuda",
-            tensorboard_log="./sac_tensorboard/"
+            tensorboard_log="./sac_tensorboard/",
+            custom_objects=custom_objs
         )
         if learning_rate is not None:
             print(f"Adjusting learning rate to {learning_rate} for warm-start adaptation...")
@@ -62,17 +67,32 @@ def train(timesteps=500000, num_envs=16, model_save_name="base", load_model_path
         kwargs = {
             "policy": "MlpPolicy",
             "env": vec_env,
-            "verbose": 1,
+            "verbose": 0,
             "tensorboard_log": "./sac_tensorboard/",
             "gamma": 0.999,
-            "device": "cuda"
+            "device": "cuda",
+            "train_freq": (4, "step"),
+            "gradient_steps": 4,
         }
         if learning_rate is not None:
             kwargs["learning_rate"] = learning_rate
         model = SAC(**kwargs)
 
+    # PyTorch JIT compilation (torch.compile) on actor network
+    import torch
+    if torch.cuda.is_available() and hasattr(torch, "compile"):
+        try:
+            model.policy.actor = torch.compile(model.policy.actor)
+            print("Accelerating SAC policy actor with torch.compile!")
+        except Exception as e:
+            print(f"torch.compile skipped: {e}")
+
     print(f"Starting training for {timesteps} timesteps...")
     model.learn(total_timesteps=timesteps, progress_bar=True, reset_num_timesteps=(load_model_path is None))
+
+    # Unwrap compiled module before saving so checkpoints load cleanly in any environment
+    if hasattr(model.policy.actor, "_orig_mod"):
+        model.policy.actor = model.policy.actor._orig_mod
 
     # Save trained model
     model.save(model_save_name)
